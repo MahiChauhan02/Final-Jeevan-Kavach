@@ -58,10 +58,13 @@ def log_dose(medicine, status):
             ORDER BY id DESC LIMIT 1
         """, (medicine["id"], date.today().isoformat(), medicine["schedule"])).fetchone()
         if existing:
+            previous = con.execute("SELECT status FROM dose_logs WHERE id=?", (existing["id"],)).fetchone()["status"]
             con.execute("""
                 UPDATE dose_logs SET status=?, logged_at=?
                 WHERE id=?
             """, (status, now.isoformat(timespec="seconds"), existing["id"]))
+            if previous != "Taken" and status == "Taken":
+                con.execute("UPDATE medicines SET stock=MAX(stock-1, 0) WHERE id=?", (medicine["id"],))
         else:
             con.execute("""
                 INSERT INTO dose_logs
@@ -72,7 +75,7 @@ def log_dose(medicine, status):
         if status == "Missed":
             con.execute("INSERT INTO alerts(message, created_at) VALUES (?, ?)",
                         (f"Missed dose recorded for {medicine['name']}. Review the routine.", now.isoformat(timespec="seconds")))
-        elif status == "Taken":
+        elif status == "Taken" and not existing:
             con.execute("UPDATE medicines SET stock=MAX(stock-1, 0) WHERE id=?", (medicine["id"],))
 
 @app.route("/")
@@ -204,6 +207,14 @@ def export_csv():
         writer.writerow(list(row))
     return Response(output.getvalue(), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=jeevan_kavach_dose_history.csv"})
+
+@app.route("/tools")
+def features_page():
+    today = date.today().isoformat()
+    with get_db() as con:
+        medicines = con.execute("SELECT * FROM medicines ORDER BY schedule, name").fetchall()
+        missed_count = con.execute("SELECT COUNT(*) n FROM dose_logs WHERE status='Missed'").fetchone()["n"]
+    return render_template("index.html", page="features", medicines=medicines, missed_count=missed_count, today=date.today().strftime("%A, %d %B %Y"))
 
 @app.route("/health")
 def health():
